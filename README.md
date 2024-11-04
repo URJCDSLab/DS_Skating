@@ -1,4 +1,4 @@
-# Padel 2D-Tracking from Monocular Video
+# Figure Skating Pose Detection and 3D reconstruction
 
 ## Overview
 
