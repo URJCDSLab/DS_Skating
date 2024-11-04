@@ -13,6 +13,7 @@ This repository contains the implementation of a novel framework for automatic p
 
 - ÁLvaro Novillo (0009-0003-9888-6638)
 - Víctor Aceña (0000-0003-1838-2150)
+  
 Rey Juan Carlos University, Data Science Laboratory, C/ Tulipán, s/n, 28933, Móstoles, Spain
 {alvaro.novillo, victor.acena}@urjc.es
 
