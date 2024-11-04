@@ -4,7 +4,8 @@
 
 This repository contains the implementation of a novel framework for automatic pose detection and projection to a 3D space based on  [METRABS](https://arxiv.org/abs/2007.07227)
 
-<a href="url"><img src="https://github.com/AlvaroNovillo/DS_Padel/assets/81865790/a8435924-7e32-45fb-b4b7-e6eef7d03843" align="center" height="720" width="1280" ></a>
+<a href="url"><img src="https://github.com/user-attachments/assets/5d01ad28-99c5-4d7c-8651-e95ca4dddc2a" align="center" height="720" width="1280" ></a>
+
 
 
 
