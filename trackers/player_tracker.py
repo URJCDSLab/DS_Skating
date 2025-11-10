@@ -5,15 +5,19 @@ Created on Thu Apr  4 12:30:44 2024
 @author: pc
 """
 import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import zipfile
-
 import cv2
+import csv
 import tensorflow as tf
 import numpy as np
 import pickle
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+import mediapipe as mp
+import pandas as pd
+
 
 class PlayerTracker:
     def __init__(self,model_type='metrabs_mob3l_y4t', skeleton = 'smpl+head_30'):
@@ -86,12 +90,20 @@ class PlayerTracker:
         return player_dict
 
 
+#Versión que guarda cada frame en una carpeta para poder revisarlos 1 por 1
     def draw_bboxes(self, video_frames, player_detections):
         output_video_frames = []
         self.frame_count = 0
+
+        output_dir = "frames_debug"
+        os.makedirs(output_dir, exist_ok=True)
+
+        print(f"Guardando frames procesados en: {os.path.abspath(output_dir)}")
+
         for frame, player_dict in zip(video_frames, player_detections):
             self.frame_count += 1
             frame_dict = player_dict[self.frame_count]
+
             for track_id, values in frame_dict.items():
                 fig = plt.figure(figsize=(10, 5.2))
                 image_ax = fig.add_subplot(1, 2, 1)
@@ -99,20 +111,16 @@ class PlayerTracker:
                 image = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
                 image_ax.imshow(image)
 
-                # Values
+                bbox = values.get("boxes", None)
+                pose2d = values.get("poses2d", None)
+                pose3d = values.get("poses3d", None)
 
-                bbox = values.get('boxes', None)
-                pose2d = values.get('poses2d', None)
-                pose3d = values.get('poses3d', None)
-
-                # Draw Bounding Boxes
                 if bbox is not None:
                     x, y, w, h, c = bbox
-                    image_ax.add_patch(Rectangle((x, y), w, h, fill=False))
+                    image_ax.add_patch(Rectangle((x, y), w, h, fill=False, edgecolor="yellow", linewidth=1.5))
 
-                # Draw pose detections
                 if pose3d is not None and pose2d is not None:
-                    pose_ax = fig.add_subplot(1, 2, 2, projection='3d')
+                    pose_ax = fig.add_subplot(1, 2, 2, projection="3d")
                     pose_ax.view_init(5, -75)
                     pose_ax.set_xlim3d(-1500, 1500)
                     pose_ax.set_zlim3d(-1500, 1500)
@@ -124,20 +132,186 @@ class PlayerTracker:
                     pose3d[..., 1], pose3d[..., 2] = pose3d[..., 2], -pose3d[..., 1]
 
                     for i_start, i_end in self.joint_edges:
+                        image_ax.plot(*zip(pose2d[i_start], pose2d[i_end]), marker="o", markersize=2)
+                        pose_ax.plot(*zip(pose3d[i_start], pose3d[i_end]), marker="o", markersize=2)
+
+                    image_ax.scatter(*pose2d.T, s=2)
+                    pose_ax.scatter(*pose3d.T, s=2)
+
+                fig.canvas.draw()
+                img_plot = np.array(fig.canvas.renderer.buffer_rgba())
+                mat_frame = cv2.cvtColor(img_plot, cv2.COLOR_RGBA2BGR)
+
+                output_video_frames.append(mat_frame)
+
+                frame_path = os.path.join(output_dir, f"frame_{self.frame_count:04d}.jpg")
+                cv2.imwrite(frame_path, mat_frame)
+
+                plt.close(fig)
+
+        print(f"Se han guardado {self.frame_count} frames en '{output_dir}'")
+
+        return output_video_frames
+
+
+#Versión que guarda los valores que salen de la bbox en un .csv
+"""
+    def draw_bboxes(self, video_frames, player_detections):
+        output_video_frames = []
+        self.frame_count = 0
+        errores_fuera_bbox = []  
+
+        for frame, player_dict in zip(video_frames, player_detections):
+            self.frame_count += 1
+            frame_dict = player_dict[self.frame_count]
+
+            for track_id, values in frame_dict.items():
+                fig = plt.figure(figsize=(10, 5.2))
+                image_ax = fig.add_subplot(1, 2, 1)
+
+                image = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+                image_ax.imshow(image)
+
+                bbox = values.get('boxes', None)
+                pose2d = values.get('poses2d', None)
+                pose3d = values.get('poses3d', None)
+
+                if bbox is not None:
+                    x, y, w, h, c = bbox
+                    image_ax.add_patch(Rectangle((x, y), w, h, fill=False))
+
+                if pose3d is not None and pose2d is not None:
+                    pose3d = pose3d.numpy()
+                    pose2d = pose2d.numpy()
+
+                    if bbox is not None:
+                        x_min, x_max = x, x + w
+                        y_min, y_max = y, y + h
+                        for joint_idx, (jx, jy) in enumerate(pose2d):
+                            if not (x_min <= jx <= x_max and y_min <= jy <= y_max):
+                                joint_name = self.joint_names[joint_idx] if joint_idx < len(
+                                    self.joint_names) else f"Joint {joint_idx}"
+                                errores_fuera_bbox.append({
+                                    "frame": self.frame_count,
+                                    "joint": joint_name,
+                                    "x": round(float(jx), 2),
+                                    "y": round(float(jy), 2),
+                                    "bbox": f"({x_min:.1f},{y_min:.1f})-({x_max:.1f},{y_max:.1f})"
+                                })
+
+                    pose_ax = fig.add_subplot(1, 2, 2, projection='3d')
+                    pose_ax.view_init(5, -75)
+                    pose_ax.set_xlim3d(-1500, 1500)
+                    pose_ax.set_zlim3d(-1500, 1500)
+                    pose_ax.set_ylim3d(2000, 5000)
+                    pose3d[..., 1], pose3d[..., 2] = pose3d[..., 2], -pose3d[..., 1]
+
+                    for i_start, i_end in self.joint_edges:
                         image_ax.plot(*zip(pose2d[i_start], pose2d[i_end]), marker='o', markersize=2)
                         pose_ax.plot(*zip(pose3d[i_start], pose3d[i_end]), marker='o', markersize=2)
 
                     image_ax.scatter(*pose2d.T, s=2)
                     pose_ax.scatter(*pose3d.T, s=2)
 
-            fig.canvas.draw()
+                fig.canvas.draw()
+                img_plot = np.array(fig.canvas.renderer.buffer_rgba())
+                mat_frame = cv2.cvtColor(img_plot, cv2.COLOR_RGBA2BGR)
+                output_video_frames.append(mat_frame)
+                plt.close(fig)
 
-            img_plot = np.array(fig.canvas.renderer.buffer_rgba())
-
-            mat_frame = cv2.cvtColor(img_plot, cv2.COLOR_RGBA2BGR)
-
-            output_video_frames.append(mat_frame)
-
-            plt.close()
+        if errores_fuera_bbox:
+            csv_path = "errores_fuera_bbox.csv"
+            with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["frame", "joint", "x", "y", "bbox"])
+                writer.writeheader()
+                writer.writerows(errores_fuera_bbox)
+            print(f"\nArchivo guardado con {len(errores_fuera_bbox)} errores en '{csv_path}'")
 
         return output_video_frames
+"""
+
+
+#Versión con los gráficos X e Y de cada articulación
+"""
+    def draw_bboxes(self, video_frames, player_detections):
+        output_video_frames = []
+        self.frame_count = 0
+        joints_study_data = []
+
+        for frame, player_dict in zip(video_frames, player_detections):
+            self.frame_count += 1
+            frame_dict = player_dict[self.frame_count]
+
+            for track_id, values in frame_dict.items():
+                fig = plt.figure(figsize=(10, 5.2))
+                image_ax = fig.add_subplot(1, 2, 1)
+                image = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+                image_ax.imshow(image)
+
+                bbox = values.get('boxes', None)
+                pose2d = values.get('poses2d', None)
+                pose3d = values.get('poses3d', None)
+
+                if bbox is not None:
+                    x, y, w, h, c = bbox
+                    image_ax.add_patch(Rectangle((x, y), w, h, fill=False))
+
+                if pose3d is not None and pose2d is not None:
+                    pose_ax = fig.add_subplot(1, 2, 2, projection='3d')
+                    pose_ax.view_init(5, -75)
+                    pose_ax.set_xlim3d(-1500, 1500)
+                    pose_ax.set_zlim3d(-1500, 1500)
+                    pose_ax.set_ylim3d(2000, 5000)
+
+                    pose3d = pose3d.numpy()
+                    pose2d = pose2d.numpy()
+                    pose3d[..., 1], pose3d[..., 2] = pose3d[..., 2], -pose3d[..., 1]
+
+                    for i_start, i_end in self.joint_edges:
+                        image_ax.plot(*zip(pose2d[i_start], pose2d[i_end]), marker='o', markersize=2)
+                        pose_ax.plot(*zip(pose3d[i_start], pose3d[i_end]), marker='o', markersize=2)
+
+                    image_ax.scatter(*pose2d.T, s=2)
+                    pose_ax.scatter(*pose3d.T, s=2)
+
+                    num_joints = len(pose2d)
+                    for joint_idx in range(num_joints):
+                        x, y = pose2d[joint_idx]
+                        joints_study_data.append({
+                            "frame": self.frame_count,
+                            "joint": joint_idx,
+                            "x": x,
+                            "y": y,
+                            "track_id": track_id
+                        })
+
+                fig.canvas.draw()
+                img_plot = np.array(fig.canvas.renderer.buffer_rgba())
+                mat_frame = cv2.cvtColor(img_plot, cv2.COLOR_RGBA2BGR)
+                output_video_frames.append(mat_frame)
+                plt.close(fig)
+
+        df = pd.DataFrame(joints_study_data)
+
+        plt.figure(figsize=(10, 6))
+        for joint_idx in df["joint"].unique():
+            df_joint = df[df["joint"] == joint_idx]
+
+            if hasattr(self, "joint_names") and joint_idx < len(self.joint_names):
+                joint_name = self.joint_names[joint_idx]
+            else:
+                joint_name = f"Joint {joint_idx}"
+
+            plt.plot(df_joint["frame"], df_joint["y"], label=joint_name, alpha=0.5)
+
+        plt.title("Movimiento Y de todas las articulaciones")
+        plt.xlabel("Frame")
+        plt.ylabel("Coordenada Y")
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.tight_layout()
+        plt.show()
+
+        return output_video_frames
+        
+"""
+
