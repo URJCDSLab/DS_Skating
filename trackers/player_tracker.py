@@ -18,7 +18,11 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import mediapipe as mp
 import pandas as pd
+from collections import namedtuple
 
+Point2D = namedtuple("Point2D", ["x", "y"])
+Point3D = namedtuple("Point3D", ["x", "y", "z"])
+BBox = namedtuple("BBox", ["x", "y", "w", "h", "conf"])
 
 class PlayerTracker:
     def __init__(self,model_type='metrabs_mob3l_y4t', skeleton = 'smpl+head_30'):
@@ -121,12 +125,10 @@ class PlayerTracker:
         area = mask[y1:y2, x1:x2]
         return np.mean(area) > thresh
 
-    #Versión que pinta las extremidades de un color y de rojo las incorrectamente colocadas
+    #Versión que pinta las extremidades de un color y de rojo las incorrectamente colocadas y con valores de los puntos y la bbox más visuales
     def draw_bboxes(self, video_frames, player_detections):
         output_video_frames = []
         self.frame_count = 0
-
-        segmenter = self.segmenter
 
         output_dir = "output_frames"
         os.makedirs(output_dir, exist_ok=True)
@@ -151,13 +153,29 @@ class PlayerTracker:
                 image = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
                 image_ax.imshow(image)
 
-                bbox = values.get("boxes", None)
-                pose2d = values.get("poses2d", None)
-                pose3d = values.get("poses3d", None)
+                raw_bbox = values.get("boxes", None)
+                raw_pose2d = values.get("poses2d", None)
+                raw_pose3d = values.get("poses3d", None)
+
+                bbox = None
+                pose2d = None
+                pose3d = None
+
+                if raw_bbox is not None:
+                    bbox = BBox(*raw_bbox)
+
+                if raw_pose2d is not None:
+                    pose2d = [Point2D(int(x), int(y)) for x, y in raw_pose2d.numpy()]
+
+                if raw_pose3d is not None:
+                    p3d = raw_pose3d.numpy()
+                    p3d[..., 1], p3d[..., 2] = p3d[..., 2], -p3d[..., 1]
+                    pose3d = [Point3D(x, y, z) for x, y, z in p3d]
 
                 if bbox is not None:
-                    x, y, w, h, c = bbox
-                    image_ax.add_patch(Rectangle((x, y), w, h, fill=False, color="yellow"))
+                    image_ax.add_patch(
+                        Rectangle((bbox.x, bbox.y), bbox.w, bbox.h, fill=False, color="yellow")
+                    )
 
                 if pose3d is not None and pose2d is not None:
                     pose_ax = fig.add_subplot(1, 2, 2, projection="3d")
@@ -166,23 +184,20 @@ class PlayerTracker:
                     pose_ax.set_zlim3d(-1500, 1500)
                     pose_ax.set_ylim3d(2000, 5000)
 
-                    pose3d = pose3d.numpy()
-                    pose2d = pose2d.numpy()
-                    pose3d[..., 1], pose3d[..., 2] = pose3d[..., 2], -pose3d[..., 1]
 
                     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     results = self.segmenter.process(rgb_frame)
                     mask = results.segmentation_mask > 0.3
 
-                    joint_status = []
+                    joint_status = {}
 
-                    for joint_idx, (x, y) in enumerate(pose2d.astype(int)):
+                    for joint_idx, pt in enumerate(pose2d):
                         joint_name = joints[joint_idx] if joint_idx < len(joints) else f"joint_{joint_idx}"
                         region = self.get_joint_region(joint_name)
                         base_color = self.region_colors[region]
 
-                        if 0 <= y < mask.shape[0] and 0 <= x < mask.shape[1]:
-                            inside = self.is_inside_body(x, y, mask, kernel=13, thresh=0.10)
+                        if 0 <= pt.y < mask.shape[0] and 0 <= pt.x < mask.shape[1]:
+                            inside = self.is_inside_body(pt.x, pt.y, mask, kernel=13, thresh=0.10)
                             if inside:
                                 status = "OK"
                                 color = base_color
@@ -193,26 +208,56 @@ class PlayerTracker:
                             status = "OUT_OF_BOUNDS"
                             color = "gray"
 
-                        joint_status.append((joint_idx, (x, y), color))
-                        log_f.write(f"{self.frame_count},{joint_name},{x},{y},{status}\n")
+                        joint_status[joint_idx] = {
+                            "pt": pt,
+                            "name": joint_name,
+                            "color": color,
+                            "status": status
+                        }
+
+                        log_f.write(f"{self.frame_count},{joint_name},{pt.x},{pt.y},{status}\n")
 
                     for i_start, i_end in self.joint_edges:
-                        start_name = joints[i_start] if i_start < len(joints) else str(i_start)
-                        region = self.get_joint_region(start_name)
+                        start = joint_status[i_start]
+                        end = joint_status[i_end]
+
+                        region = self.get_joint_region(start["name"])
                         base_color = self.region_colors[region]
 
-                        c_start = [c for j, _, c in joint_status if j == i_start][0]
-                        c_end = [c for j, _, c in joint_status if j == i_end][0]
-                        color_line = "red" if ("red" in (c_start, c_end)) else base_color
+                        color_line = "red" if (
+                                start["color"] == "red" or end["color"] == "red"
+                        ) else base_color
 
-                        image_ax.plot(*zip(pose2d[i_start], pose2d[i_end]), color=color_line, linewidth=1.8, alpha=0.85)
-                        pose_ax.plot(*zip(pose3d[i_start], pose3d[i_end]), color=color_line)
+                        image_ax.plot(
+                            [start["pt"].x, end["pt"].x],
+                            [start["pt"].y, end["pt"].y],
+                            color=color_line,
+                            linewidth=1.8,
+                            alpha=0.85
+                        )
 
-                    for _, (x, y), color in joint_status:
-                        image_ax.scatter(x, y, s=30, c="white", edgecolors="none", alpha=0.8, zorder=3)
-                        image_ax.scatter(x, y, s=14, c=color, edgecolors="black", linewidths=0.4, zorder=4)
+                        pose_ax.plot(
+                            [pose3d[i_start].x, pose3d[i_end].x],
+                            [pose3d[i_start].y, pose3d[i_end].y],
+                            [pose3d[i_start].z, pose3d[i_end].z],
+                            color=color_line
+                        )
 
-                    pose_ax.scatter(*pose3d.T, s=3)
+                    for j in joint_status.values():
+                        image_ax.scatter(
+                            j["pt"].x, j["pt"].y,
+                            s=20,
+                            c=j["color"],
+                            edgecolors="none",
+                            zorder=4
+                        )
+
+                    pose_ax.scatter(
+                        [p.x for p in pose3d],
+                        [p.y for p in pose3d],
+                        [p.z for p in pose3d],
+                        s=3
+                    )
 
                 fig.canvas.draw()
                 img_plot = np.array(fig.canvas.renderer.buffer_rgba())
@@ -231,7 +276,7 @@ class PlayerTracker:
 
         return output_video_frames
 
-#Versión original que guarda cada frame en una carpeta para poder revisarlos 1 por 1
+#Versión original con guardado de frames en carpeta
 """
     def draw_bboxes(self, video_frames, player_detections):
         output_video_frames = []
@@ -296,7 +341,7 @@ class PlayerTracker:
         return output_video_frames
 """
 
-#Versión que guarda los valores que salen de la bbox en un .csv
+#Versión atrasada que guarda los valores que salen de la bbox en un .csv
 """
     def draw_bboxes(self, video_frames, player_detections):
         output_video_frames = []
@@ -373,7 +418,7 @@ class PlayerTracker:
 """
 
 
-#Versión con los gráficos X e Y de cada articulación
+#Versión atrasada con los gráficos X e Y de cada articulación
 """
     def draw_bboxes(self, video_frames, player_detections):
         output_video_frames = []
