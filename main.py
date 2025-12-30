@@ -33,7 +33,7 @@ def main():
     output_video_frames = player_tracker.draw_bboxes(video_frames, player_detections)
 
     #Output video
-    save_video_batch(output_video_frames, "output_videos/result_with_mediapipe_results_prueba_velocidad.avi")
+    save_video_batch(output_video_frames, "output_videos/result_prueba_namedtuple2.avi")
 
 if __name__ == '__main__':
     main()
