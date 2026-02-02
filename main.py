@@ -23,17 +23,16 @@ def main():
 
     player_detections = player_tracker.detect_frames(video_frames,
                                                      read_from_stub=True,
-                                                     stub_path="tracker_stubs/player_detections.pkl",
-                                                     n = 1
+                                                     stub_path="tracker_stubs/player_detections.pkl"
                                                      )
 
 
 
     #Player Bounding Boxes
-    output_video_frames = player_tracker.draw_bboxes(video_frames, player_detections)
+    output_video_frames = player_tracker.draw_results(video_frames, player_detections)
 
     #Output video
-    save_video_batch(output_video_frames, "output_videos/result_prueba_namedtuple2.avi")
+    save_video_batch(output_video_frames, "output_videos/result_prueba_cambios_joint_region.avi")
 
 if __name__ == '__main__':
     main()
