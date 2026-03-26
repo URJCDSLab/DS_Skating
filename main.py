@@ -5,14 +5,16 @@ Padel analyzer
 @author: pc
 """
 
+import time
+
 from utils import (read_video_batch,
                    save_video_batch)
-
 
 from trackers import PlayerTracker
 
 
 def main():
+
     #Read video
     input_video = "demo.mp4"
     video_frames = read_video_batch(input_video)
@@ -27,12 +29,11 @@ def main():
                                                      )
 
 
-
     #Player Bounding Boxes
     output_video_frames = player_tracker.draw_results(video_frames, player_detections)
 
     #Output video
-    save_video_batch(output_video_frames, "output_videos/result_prueba_cambios_joint_region.avi")
+    save_video_batch(output_video_frames, "output_videos/result_prueba_cambio_angulos.avi")
 
 if __name__ == '__main__':
     main()
