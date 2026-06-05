@@ -53,29 +53,58 @@ def download_model(model_type):
 
     return model_extract_path
 
-def is_inside_body(x, y, mask, kernel=8, thresh=0.25):
+
+def is_inside_body(x, y, mask, kernel=19, thresh=0.00):
     """
-    Determines whether a 2D joint lies within the skater's body mask.
+    Determines if a 2D joint coordinate resides within the subject's segmentation mask.
+
+    Uses a distance-weighted neighborhood analysis to handle boundary uncertainty
+    and prevent false negatives near the skater's edges.
 
     Args:
-        x (int): X coordinate of the joint.
-        y (int): Y coordinate of the joint.
-        mask (np.ndarray): Binary segmentation mask of the player.
-        kernel (int): Radius of the neighborhood to sample.
-        thresh (float): Minimum mean mask value to consider the joint inside the body.
+        x (float or int): Horizontal coordinate of the joint.
+        y (float or int): Vertical coordinate of the joint.
+        mask (np.ndarray): Binary or probability segmentation mask.
+        kernel (int): Window size for local neighborhood analysis. Defaults to 19.
+        thresh (float): Confidence threshold for the weighted score. Defaults to 0.00.
+
     Returns:
-         bool: True if the detection belongs to the body, false if not.
+        bool: True if the joint is validated inside the body, False otherwise.
     """
-    h, w = mask.shape # Mask dimensions
+    h, w = mask.shape
 
-    # Defines local neighborhood boundaries (clamped to image limits)
-    y1, y2 = max(0, y - kernel), min(h, y + kernel)
-    x1, x2 = max(0, x - kernel), min(w, x + kernel)
+    # Validates that coordinates fall within the image boundary limits
+    if not (0 <= x < w and 0 <= y < h):
+        return False
 
-    # Extracts local patch around the joint
+    # Returns true immediately if the exact coordinate hits the mask
+    if mask[int(y), int(x)]:
+        return True
+
+    # Extracts the local neighborhood bounding box around the coordinate
+    y1, y2 = max(0, int(y - kernel)), min(h, int(y + kernel + 1))
+    x1, x2 = max(0, int(x - kernel)), min(w, int(x + kernel + 1))
     area = mask[y1:y2, x1:x2]
 
-    return np.mean(area) > thresh
+    # Prevents processing if the cropped neighborhood area is empty
+    if area.size == 0:
+        return False
+
+    # Generates a coordinate grid to compute spatial distances
+    y_indices, x_indices = np.mgrid[y1:y2, x1:x2]
+    dist_al_centro = np.sqrt((y_indices - y) ** 2 + (x_indices - x) ** 2)
+
+    # Computes exponential decay weights based on distance to the center
+    pesos = np.exp(-dist_al_centro / (kernel / 2))
+
+    # Normalizes the weight matrix to sum up to 1.0
+    pesos_norm = pesos / np.sum(pesos)
+
+    # Evaluates the final weighted score within the neighborhood
+    score_ponderado = np.sum(area * pesos_norm)
+
+    return score_ponderado > thresh
+
 
 def process_coordinates(values):
     """
@@ -116,7 +145,7 @@ def process_coordinates(values):
 
     return bbox, pose2d, pose3d
 
-def analyze_frame_techniques(pose2d, pose3d, frame_idx, joint_names, tech_state):
+def analyze_frame_techniques(pose2d, pose3d, frame_idx, joint_names, tech_state, is_valid=True):
     """
     HELPER METHOD FOR MAIN METHOD "DRAW_RESULTS":
 
@@ -163,6 +192,18 @@ def analyze_frame_techniques(pose2d, pose3d, frame_idx, joint_names, tech_state)
         n2 = math.sqrt(v2[0] ** 2 + v2[1] ** 2)
         if n1 < 1e-6 or n2 < 1e-6: return 0.0
         return math.degrees(math.acos(max(-1.0, min(1.0, dot / (n1 * n2)))))
+
+    if not is_valid:
+        tech_state["last_yaw"] = None
+
+        return {
+            "leg_angle": None,
+            "body_lean": None,
+            "is_airborne": False,
+            "height_px": 0.0,
+            "rotations_so_far": 0.0,
+        }
+
 
     # Leg angle (hip→knee vectors)
     lhip, rhip = get2("lhip_smpl"), get2("rhip_smpl")
@@ -491,12 +532,18 @@ def generate_summary_frames(stats, frame_shape, n_frames=120):
         ax_right.set_xticklabels(ids, color="white", fontsize=10)
         ax_right.set_ylabel("Max height (px)", fontsize=10)
 
+        if heights:
+            ax_right.set_ylim(0, max(heights) * 1.2)
+
         # Annotates each bar with rotation count
         for bar, rot in zip(bars, rots):
+            current_height = bar.get_height()
+            margin = max(current_height * 0.04, 2)
+
             ax_right.text(
                 bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 1,
-                f"{rot:.1f}↺",
+                current_height + margin,
+                f"{rot:.1f} rev",
                 ha="center", va="bottom",
                 color="#f0c060", fontsize=9, fontweight="bold"
             )

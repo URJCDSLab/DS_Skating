@@ -4,12 +4,7 @@ Created on Thu Apr  4 12:30:44 2024
 
 @author: pc
 """
-import os
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-os.environ["ABSL_CPP_MIN_LOG_LEVEL"] = "2"
-
 import cv2
-import csv
 import tensorflow as tf
 import numpy as np
 import pickle
@@ -17,7 +12,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import mediapipe as mp
 from collections import namedtuple
-import math
+import csv
 
 from utils import detection_utils, draw_utils
 
@@ -29,15 +24,15 @@ BBox = namedtuple("BBox", ["x", "y", "w", "h", "conf"])
 
 class PlayerTracker:
     """
-    Handles player (skater) pose detection, analysis and visualization using a deep learning model.
+    Handles skater's pose detection, analysis and visualization using a deep learning AI model.
 
     Attributes:
-        model_path (str): Local path to the downloaded AI model.
-        model : Loaded TensorFlow SavedModel used for pose detection.
-        skeleton (str): Skeleton definition used by the model.
-        joint_names (np.ndarray): Names of joints for the selected skeleton.
-        joint_edges (np.ndarray): Connections between joints (bones).
-        frame_count (Integer): Frame counter for identification of each frame.
+        model_path (str): Path to the MeTRAbs model.
+        model : The downloaded MeTRAbs model itself.
+        skeleton (str): Skeleton type used by the model.
+        joint_names (np.ndarray): Names of the different skater's joints.
+        joint_edges (np.ndarray): Connections between joints.
+        frame_count (Integer): Frame counted id.
         segmenter : MediaPipe selfie segmentation model.
         REGION_COLORS (dict): Dictionary for differentiating each region's color on the skeleton.
         JOINT_REGIONS (dict): Dictionary that associates each joint to their respective region.
@@ -62,6 +57,7 @@ class PlayerTracker:
         "head": "#d62728"  # dark red
     }
 
+    #Used to calculate where the ground is when the recording is made by an unstable phone
     GROUND_JOINTS = {"lank_smpl", "rank_smpl", "ltoe_smpl", "rtoe_smpl"}
 
     def __init__(self,model_type='metrabs_mob3l_y4t', skeleton = 'smpl+head_30'):
@@ -70,9 +66,10 @@ class PlayerTracker:
         configuring the skeleton, and preparing visualization and segmentation tools.
 
         Args:
-            model_type (str): Identifer of the METRABS model to download, uses metrabs mob3l y4t as default
-            skeleton (str): Skeleton layout for pose detection, uses smpl+head_30 as default
+            model_type (str): Identifer of the METRABS model to download.
+            skeleton (str): Skeleton layout for pose detection.
         """
+
         self.model_path = detection_utils.download_model(model_type)
         self.model = tf.saved_model.load(self.model_path)
         self.skeleton = skeleton
@@ -87,14 +84,14 @@ class PlayerTracker:
 
     def detect_frames(self, frames, read_from_stub=False, stub_path=None):
         """
-        Detects the skater's poses using the AI model on each frame and returns a list of the results.
+        Detects the skater's poses using the AI model on each frame.
 
         Args:
             frames (list[np.ndarray]):  List of frames to process.
             read_from_stub (bool): If true, obtain already detected frames from stub_path.
             stub_path (str): File path used to read/write cached detections.
         Returns:
-            list[dict]: The skater's skeleton detections for each frame.
+            list[dict]: The skater's pose detections for each frame.
         """
         player_detections = []
 
@@ -104,8 +101,10 @@ class PlayerTracker:
             return player_detections
 
         self.frame_count = 0
+        frameslen = len(frames)
 
         for frame in frames:
+            print(f"Processing detections in frame number: {self.frame_count} out of {frameslen} frames")
             player_dict = self.detect_frame(frame)
             player_detections.append(player_dict)
 
@@ -130,7 +129,7 @@ class PlayerTracker:
         """
         input_image = tf.convert_to_tensor(frame, dtype=tf.uint8)
 
-        results = self.model.detect_poses(input_image, skeleton=self.skeleton)
+        results = self.model.detect_poses(input_image, skeleton=self.skeleton, detector_threshold=0.10)
 
         player_dict = {}
         self.frame_count +=1
@@ -146,26 +145,29 @@ class PlayerTracker:
 
         return player_dict
 
+
     def draw_results(self, video_frames, player_detections):
         """
         MAIN METHOD OF THE PLAYERTRACKER CLASS:
 
-        Visualizes pose detections, analyzes joint validity, and generates debugging outputs.
+        Visualizes pose detections, validates joints, and generates debugging outputs.
 
         For each frame, this method:
-        - Draws bounding boxes and skeleton overlays
-        - Validates joint positions using segmentation masks
-        - Highlights detection errors
-        - Plots the temporal evolution of joint vertical positions
-        - Saves annotated frames, logs and CSV reports for offline analysis
+        - Draws bounding boxes and skeleton overlays.
+        - Validates joint positions using segmentation masks.
+        - Highlights detection errors.
+        - Plots the temporal evolution of joint vertical positions.
+        - Saves annotated frames, logs and CSV reports for offline analysis.
 
         Args:
-            video_frames (list[np.ndarray]): Original list of frames obtained from the video.
+            video_frames (list[np.ndarray]): Original frames list obtained from the video.
             player_detections (list[dict]): List of the skater's detections.
 
         Returns:
             list[np.ndarray]: List of result frames.
         """
+        print("Starting detections analysis...")
+
         output_video_frames = []
         errors_out_of_bbox = []
         joints_study_data = []
@@ -181,6 +183,8 @@ class PlayerTracker:
             "max_jump_rotations": 0.0,
             "last_yaw": None,
         }
+
+        self._last_valid_ground_y = None
 
         self.frame_count = 0
 
@@ -214,11 +218,25 @@ class PlayerTracker:
                     joints_study_data.extend(study_entries)
                     errors_out_of_bbox.extend(bbox_errors)
 
-                    tech = detection_utils.analyze_frame_techniques(pose2d, pose3d, self.frame_count, self.joint_names, self._tech_state)
+
+                    articulaciones_criticas = ["lhip_smpl", "rhip_smpl", "lkne_smpl", "rkne_smpl", "lank_smpl",
+                                               "rank_smpl"]
+                    frame_es_valido = True
+                    for idx, info in joint_status.items():
+                        if info["name"] in articulaciones_criticas and info["status"] != "OK":
+                            frame_es_valido = False
+                            break
+
+
+                    tech = detection_utils.analyze_frame_techniques(
+                        pose2d, pose3d, self.frame_count, self.joint_names, self._tech_state, is_valid=frame_es_valido
+                    )
+
                     draw_utils.draw_technique_overlay(frame, tech, pose2d, self.joint_names)
 
-                    #Draws each frame with their respective 2D and 3D skeletons, colors and joint evolution graph
-                    mat_frame = self._render_full_visualization(frame, bbox, pose3d, joint_status, joints_study_data, output_dir)
+                    # Draws each frame with their respective 2D and 3D skeletons
+                    mat_frame = self._render_full_visualization(frame, bbox, pose3d, joint_status, joints_study_data,
+                                                                output_dir)
 
                     output_video_frames.append(mat_frame)
 
@@ -234,7 +252,7 @@ class PlayerTracker:
                 writer.writeheader()
                 writer.writerows(errors_out_of_bbox)
 
-            print(f"📄 CSV guardado con {len(errors_out_of_bbox)} errores fuera de la bbox")
+            print(f"CSV guardado con {len(errors_out_of_bbox)} errores fuera de la bbox")
 
         print(f"Frames guardados en: {output_dir}")
         print(f"Log articulaciones: {log_file}")
@@ -250,10 +268,13 @@ class PlayerTracker:
             "max_leg_angle": self._tech_state["max_leg_angle"],
             "max_jump_rotations": self._tech_state["max_jump_rotations"],
         }
+
+        print(f"Generating analysis summary frames...")
         summary_frames = detection_utils.generate_summary_frames(self.routine_stats, output_video_frames[-1].shape)
         output_video_frames.extend(summary_frames)
 
         return output_video_frames
+
 
     def _init_figure(self):
         """
@@ -358,33 +379,24 @@ class PlayerTracker:
         joints_study_entries = []
         errors_out_of_bbox = []
 
-        # Convert frame to RGB and generate segmentation mask
+        # Converts frame to RGB and processes the segmentation mask
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.segmenter.process(rgb_frame)
         mask = results.segmentation_mask > 0.3
 
-        # Compute ground reference for normalization
-        ground_ys = []
         for joint_idx, pt in enumerate(pose2d):
-            joint_name = joints[joint_idx] if joint_idx < len(joints) else None
-            if joint_name in self.GROUND_JOINTS:
-                ground_ys.append(pt.y)
-
-        ground_y = max(ground_ys) if ground_ys else None
-
-        # Validate each joint
-        for joint_idx, pt in enumerate(pose2d):
-
+            # Assigns a name to the joint based on its index
             joint_name = (
                 joints[joint_idx]
                 if joint_idx < len(joints)
                 else f"joint_{joint_idx}"
             )
 
+            # Determines the anatomical region and its base visualization color
             region = self.JOINT_REGIONS.get(joint_name, "torso")
             base_color = self.REGION_COLORS[region]
 
-            # Check if joint is within bbox
+            # Checks if the joint position falls outside the bounding box boundaries
             if bbox is not None:
                 if not (
                         bbox.x <= pt.x <= bbox.x + bbox.w
@@ -400,17 +412,16 @@ class PlayerTracker:
                         }
                     )
 
-            # Check if joint is inside body mask
+            # Evaluates if the joint is within the image bounds and inside the body mask
             if 0 <= pt.y < mask.shape[0] and 0 <= pt.x < mask.shape[1]:
-                inside = detection_utils.is_inside_body(
-                    pt.x, pt.y, mask, kernel=13, thresh=0.10
-                )
+                inside = detection_utils.is_inside_body(pt.x, pt.y, mask)
                 color = base_color if inside else "red"
                 status = "OK" if inside else "OUTSIDE_BODY"
             else:
                 color = "gray"
                 status = "OUT_OF_BOUNDS"
 
+            # Stores the validation status and properties for the joint
             joint_status[joint_idx] = {
                 "pt": pt,
                 "name": joint_name,
@@ -418,20 +429,42 @@ class PlayerTracker:
                 "status": status,
             }
 
-            # Normalize Y relative to ground
+        # Collects the vertical coordinates of valid ground joints
+        ground_ys = []
+        for joint_idx, info in joint_status.items():
+            if info["name"] in self.GROUND_JOINTS and info["status"] == "OK":
+                ground_ys.append(info["pt"].y)
+
+        # Updates or falls back to the last known valid ground reference level
+        if ground_ys:
+            ground_y = max(ground_ys)
+            self._last_valid_ground_y = ground_y
+        else:
+            if self._last_valid_ground_y is not None:
+                ground_y = self._last_valid_ground_y
+            else:
+                ground_y = max([p.y for p in pose2d])
+
+        for joint_idx, pt in enumerate(pose2d):
+            info = joint_status[joint_idx]
+
+            # Calculates the normalized height relative to the ground reference level
             if ground_y is not None:
                 y_norm = ground_y - pt.y
             else:
                 y_norm = 0
 
-            joints_study_entries.append(
-                {
-                    "frame": self.frame_count,
-                    "joint": joint_idx,
-                    "y_norm": y_norm,
-                    "track_id": track_id,
-                }
-            )
+            # Appends valid detections to the temporal study dataset
+            if info["status"] == "OK":
+                joints_study_entries.append(
+                    {
+                        "frame": self.frame_count,
+                        "joint": joint_idx,
+                        "y_norm": y_norm,
+                        "track_id": track_id,
+                    }
+                )
+
 
         return joint_status, joints_study_entries, errors_out_of_bbox
 
@@ -575,6 +608,9 @@ class PlayerTracker:
         cv2.imwrite(frame_path, mat_frame)
 
         return mat_frame
+
+
+
 
 #Versión original con guardado de frames en carpeta
 """

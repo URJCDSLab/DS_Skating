@@ -40,19 +40,28 @@ def draw_technique_overlay(frame, tech, pose2d, joint_names):
     font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.58, 1
     WHITE = (255, 255, 255)
     YELLOW = (0, 220, 255)
+    RED = (0, 0, 255)
     y = 30 # Initial vertical offset for stacked text lines
 
     # Displays leg angle if available
     if tech["leg_angle"] is not None:
-        draw_text_with_bg(frame, f"Leg angle: {tech['leg_angle']:.1f}°",
+        draw_text_with_bg(frame, f"Leg angle: {tech['leg_angle']:.1f} deg",
                                 (10, y), font, scale, WHITE, thick)
-        y += 26
+    else:
+        draw_text_with_bg(frame, "Leg angle: --",
+                          (10, y), font, scale, RED, thick)
+
+    y += 26
 
     # Displays body lean if available
     if tech["body_lean"] is not None:
-        draw_text_with_bg(frame, f"Body lean: {tech['body_lean']:.1f}°",
+        draw_text_with_bg(frame, f"Body lean: {tech['body_lean']:.1f} deg",
                                 (10, y), font, scale, WHITE, thick)
-        y += 26
+    else:
+        draw_text_with_bg(frame, "Body lean: --",
+                          (10, y), font, scale, RED, thick)
+
+    y += 26
 
     # Highlights jump state and related metrics
     if tech["is_airborne"]:
@@ -162,18 +171,22 @@ def draw_technique_indicators(frame, pose2d, tech, joint_names):
     if tech["is_airborne"]:
         pelv = get2("pelv_smpl")
         if pelv is not None:
-            arrow_len = int(min(tech["height_px"] * 0.4, 120)) # Scales arrow length
-            tip = (pelv.x, pelv.y - arrow_len) # Arrow tip position
-            base = (pelv.x, pelv.y) # Arrow base position
+            height_val = tech["height_px"]
+            arrow_len = int(min(height_val * 0.4, 90)) # Scales arrow length
+            base = (int(pelv.x), int(pelv.y)) # Arrow base position
+            tip_y = max(int(pelv.y - arrow_len), 5)
+            tip = (int(pelv.x), tip_y) # Arrow tip position
 
-            # Draws vertical arrow representing jump height
-            cv2.arrowedLine(frame, base, tip, YELLOW, 3,
-                            cv2.LINE_AA, tipLength=0.25)
+            if arrow_len > 5:
+                # Draws vertical arrow representing jump height
+                cv2.arrowedLine(frame, base, tip, YELLOW, 3,
+                                cv2.LINE_AA, tipLength=0.25)
 
-            # Displays height value next to arrow
-            cv2.putText(frame, f"{tech['height_px']:.0f}px",
-                        (pelv.x + 8, pelv.y - arrow_len // 2),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, YELLOW, 1, cv2.LINE_AA)
+                # Displays height value next to arrow
+                text_y = max(int(pelv.y - arrow_len // 2), 15)
+                cv2.putText(frame, f"{height_val:.0f}px",
+                            (int(pelv.x) + 10, text_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, YELLOW, 1, cv2.LINE_AA)
 
     # Leg angle arc visualization
     if tech["leg_angle"] is not None:
@@ -220,8 +233,8 @@ def draw_technique_indicators(frame, pose2d, tech, joint_names):
                         CYAN, 2, cv2.LINE_AA)
 
             # Draws helper lines from hip midpoint to each knee
-            cv2.line(frame, (mx, my), (lkne.x, lkne.y), CYAN, 1, cv2.LINE_AA)
-            cv2.line(frame, (mx, my), (rkne.x, rkne.y), CYAN, 1, cv2.LINE_AA)
+            cv2.line(frame, (mx, my), (int(lkne.x), int(lkne.y)), CYAN, 1, cv2.LINE_AA)
+            cv2.line(frame, (mx, my), (int(rkne.x), int(rkne.y)), CYAN, 1, cv2.LINE_AA)
 
             # Computes position for angle label
             mid_angle = math.radians((angle_l + angle_r) / 2)
@@ -229,6 +242,6 @@ def draw_technique_indicators(frame, pose2d, tech, joint_names):
             ly = int(my + (radius + 14) * math.sin(mid_angle))
 
             # Displays leg angle value near arc
-            cv2.putText(frame, f"{tech['leg_angle']:.0f}°",
+            cv2.putText(frame, f"{tech['leg_angle']:.0f} deg",
                         (lx, ly), cv2.FONT_HERSHEY_SIMPLEX,
                         0.48, WHITE, 1, cv2.LINE_AA)
